@@ -102,9 +102,9 @@ def translate_brick_masonry_document(json_data: dict[str, any]) -> dict[str, any
     return translated_data
 
 # Example usage function
-def main():
+def add_translations(input_path: str, output_path: str):
     # Sample data (your input format)
-    sample_data = json.load(open("/Users/apple/shridhar/test.json"))
+    sample_data = json.load(open(input_path))
     
     try:
         translated_result = translate_brick_masonry_document(sample_data)
@@ -113,8 +113,10 @@ def main():
         print(json.dumps(translated_result, indent=2, ensure_ascii=False))
         
         # Save to file if needed
-        with open('translated_document.json', 'w', encoding='utf-8') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(translated_result, f, indent=2, ensure_ascii=False)
+        
+        return translated_result
             
     except Exception as e:
         print(f"Error: {e}")
