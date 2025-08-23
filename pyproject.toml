@@ -1,0 +1,16 @@
+[project]
+name = "shridhar"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "agno>=1.7.12",
+    "beautifulsoup4>=4.13.4",
+    "google-cloud-texttospeech>=2.27.0",
+    "groq>=0.31.0",
+    "gtts>=2.5.4",
+    "pypdf2>=3.0.1",
+    "python-docx>=1.2.0",
+    "python-dotenv>=1.1.1",
+]
