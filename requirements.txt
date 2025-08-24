@@ -7,3 +7,7 @@ groq
 fastapi
 fastapi[standard]
 uvicorn
+slowapi
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]"
