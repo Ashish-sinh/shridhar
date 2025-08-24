@@ -1,19 +1,26 @@
 """
-Production-ready FastAPI application with hello world and health check endpoints.
+Production-ready FastAPI application with document processing endpoint.
 """
 
-import logging
-import sys
+import json
 import time
+import logging
+import traceback
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional, List
 
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# Import processing functions
+from src.doc_extractor import extract_json_from_doc
+from src.llm_parsing import add_translations
+from src.text_to_speech import process_complete_dataset
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -36,6 +43,14 @@ class HealthCheckResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     message: str
+    timestamp: float
+
+
+class DocumentProcessingResponse(BaseModel):
+    status: str
+    message: str
+    data: Dict[str, Any] = {}
+    processing_time: float
     timestamp: float
 
 
@@ -223,6 +238,93 @@ async def get_metrics():
         "status": "operational"
     }
 
+
+# Document processing endpoint
+@app.post(
+    "/process-document",
+    response_model=DocumentProcessingResponse,
+    responses={
+        200: {"model": DocumentProcessingResponse},
+        400: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def process_document(
+    file: UploadFile = File(..., description="DOCX file to process"),
+    save_intermediate: bool = Form(
+        False, 
+        description="Whether to save intermediate processing results to disk"
+    ),
+):
+    """
+    Process a document through the extraction, translation, and TTS pipeline.
+    
+    - **file**: DOCX file to process
+    - **save_intermediate**: If True, saves intermediate processing results to disk
+    """
+    start_time = time.time()
+    
+    # Validate file type
+    if not file.filename.lower().endswith(('.docx')):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .docx files are supported"
+        )
+    
+    try:
+        # Save uploaded file to a temporary location
+        temp_dir = Path("temp")
+        temp_dir.mkdir(exist_ok=True)
+        
+        temp_file = temp_dir / file.filename
+        with open(temp_file, "wb") as buffer:
+            buffer.write(await file.read())
+        
+        # 1. Extract content from DOCX
+        logger.info("Extracting content from DOCX...")
+        extracted_data = extract_json_from_doc(str(temp_file))
+        
+        # 2. Add translations
+        logger.info("Adding translations...")
+        translated_data = add_translations(extracted_data)
+        
+        # 3. Generate TTS
+        logger.info("Generating TTS files...")
+        final_data = process_complete_dataset(translated_data)
+        
+        # Save results if requested
+        if save_intermediate:
+            output_dir = Path("output")
+            output_dir.mkdir(exist_ok=True)
+            
+            with open(output_dir / "extracted.json", "w", encoding="utf-8") as f:
+                json.dump(extracted_data, f, indent=2, ensure_ascii=False)
+            
+            with open(output_dir / "translated.json", "w", encoding="utf-8") as f:
+                json.dump(translated_data, f, indent=2, ensure_ascii=False)
+            
+            with open(output_dir / "final_output.json", "w", encoding="utf-8") as f:
+                json.dump(final_data, f, indent=2, ensure_ascii=False)
+        
+        # Clean up temp file
+        temp_file.unlink()
+        
+        processing_time = time.time() - start_time
+        
+        return {
+            "status": "success",
+            "message": "Document processed successfully",
+            "data": final_data,
+            "processing_time": processing_time,
+            "timestamp": time.time(),
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing document: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing document: {str(e)}"
+        )
 
 # Main entry point
 if __name__ == "__main__":
