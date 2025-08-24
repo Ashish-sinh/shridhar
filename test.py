@@ -10,17 +10,19 @@ def main():
     try:
         # 1. Extract JSON from DOCX
         print("Extracting content from DOCX...")
-        extracted_data = extract_json_from_doc(
-            "data/demo.docx",
-            output_file="text_extracted.json"  # Optional: save intermediate result
-        )
+        extracted_data = extract_json_from_doc("data/demo.docx")
+        
+        # Save extracted data to a file if needed
+        with open('text_extracted.json', 'w', encoding='utf-8') as f:
+            json.dump(extracted_data, f, indent=2, ensure_ascii=False)
         
         # 2. Add translations to the extracted data
         print("\nAdding translations...")
-        translated_data = add_translations(
-            extracted_data,  # Pass the data directly
-            output_file="translated_document.json"  # Optional: save intermediate result
-        )
+        translated_data = add_translations(extracted_data)
+        
+        # Save translated data to a file if needed
+        with open('translated_document.json', 'w', encoding='utf-8') as f:
+            json.dump(translated_data, f, indent=2, ensure_ascii=False)
         
         # 3. Generate TTS for the translated data
         print("\nGenerating TTS files...")

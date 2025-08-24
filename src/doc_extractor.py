@@ -303,26 +303,19 @@ class DocxTopicExtractor:
             print("Error generating content preview. Check logs for details.")
 
 
-def extract_json_from_doc(path: str, output_file: Optional[str] = None) -> Dict[str, Any]:
+def extract_json_from_doc(path: str) -> Dict[str, Any]:
     """
-    Extract JSON structure from a DOCX file and optionally save to a file.
+    Extract JSON structure from a DOCX file.
     
     Args:
         path: Path to the DOCX file
-        output_file: Optional path to save the extracted JSON
-        
+            
     Returns:
         Extracted content as a dictionary
     """
     try:
         extractor = DocxTopicExtractor()
         structure = extractor.extract_topics_and_subtopics(path)
-        
-        # Save to file if output path is provided
-        if output_file:
-            extractor.save_to_json(structure, output_file)
-            logger.info(f"Extracted data saved to {os.path.abspath(output_file)}")
-            
         return structure
     except Exception as e:
         logger.error(f"Error in extract_json_from_doc: {str(e)}")

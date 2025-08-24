@@ -146,14 +146,13 @@ def process_json_with_translations(data: Dict[str, Any], agent: Agent) -> Dict[s
         logger.debug(traceback.format_exc())
         return data
 
-def add_translations(input_data: Union[str, Dict[str, Any]], output_file: Optional[str] = None) -> Dict[str, Any]:
+def add_translations(input_data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     """
     Main function to add translations to the input data.
     
     Args:
         input_data: Either a file path (str) or a dictionary containing the data to translate
-        output_file: Optional path to save the translated data
-        
+            
     Returns:
         Dictionary with added translations
     """
@@ -165,16 +164,8 @@ def add_translations(input_data: Union[str, Dict[str, Any]], output_file: Option
         else:
             data = input_data
         
-        # Add translations
-        translated_data = add_translations_to_data(data)
-        
-        # Save to file if output path is provided
-        if output_file:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(translated_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Translated data saved to {output_file}")
-        
-        return translated_data
+        # Add translations and return the result
+        return add_translations_to_data(data)
         
     except Exception as e:
         logger.error(f"Error in add_translations: {str(e)}")
@@ -190,8 +181,7 @@ def main():
             {"text": "This is another subtopic"}
         ]
     }
-    output_file = "translated_data.json"
-    add_translations(input_data, output_file)
+    add_translations(input_data)
 
 if __name__ == "__main__":
     main()
