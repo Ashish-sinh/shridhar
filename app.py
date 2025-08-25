@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from src.doc_extractor import extract_json_from_doc
 from src.llm_parsing import add_translations
 from src.text_to_speech import process_complete_dataset
+from src.supabase_client import list_files, initialize_database
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,6 +67,18 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting FastAPI application...")
     logger.info(f" Application version: {APP_VERSION}")
+    
+    # Initialize Supabase database
+    try:
+        logger.info("Initializing Supabase database...")
+        if initialize_database():
+            logger.info("✅ Supabase database initialized successfully")
+        else:
+            logger.warning("⚠️ Supabase database initialization failed, but continuing startup")
+    except Exception as e:
+        logger.error(f"❌ Error during Supabase initialization: {str(e)}")
+        logger.warning("Continuing startup despite Supabase initialization error")
+    
     logger.info("Application startup complete")
     
     yield
@@ -237,6 +250,33 @@ async def get_metrics():
         "timestamp": time.time(),
         "status": "operational"
     }
+
+
+@app.get("/files", tags=["Files"])
+async def get_files():
+    """
+    List all files stored in Supabase.
+    
+    Returns:
+        List of file records from Supabase database
+    """
+    try:
+        logger.info("📁 Retrieving files from Supabase")
+        files = list_files()
+        logger.info(f"Successfully retrieved {len(files)} files")
+        
+        return {
+            "status": "success",
+            "count": len(files),
+            "files": files,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving files: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving files: {str(e)}"
+        )
 
 
 # Document processing endpoint

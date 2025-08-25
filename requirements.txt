@@ -10,4 +10,5 @@ uvicorn
 slowapi
 python-multipart
 python-jose[cryptography]
-passlib[bcrypt]"
+passlib[bcrypt]
+supabase

@@ -1,17 +1,20 @@
 """
-Text-to-speech module for generating audio files from text content.
+Text-to-speech module for generating audio files and uploading to Supabase.
 """
 import json
 import os
 import re
 import traceback
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+import tempfile
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime, timezone
+from pathlib import Path
 
 from gtts import gTTS
 from gtts.tts import gTTSError
 
 from utils.logger import get_logger
+from src.supabase_client import upload_file
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -105,33 +108,81 @@ def create_tts_file(text: str, lang: str, filename: str) -> Optional[str]:
         logger.debug(traceback.format_exc())
         return None
 
+def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Dict[str, Any]) -> Optional[str]:
+    """
+    Create TTS file and upload to Supabase Storage.
+    
+    Args:
+        text: Text to convert to speech
+        lang: Language code ('en', 'hi', 'gu')
+        filename: Filename for the audio file
+        metadata: Metadata to store with the file
+        
+    Returns:
+        str: Public URL of uploaded file, or None if failed
+    """
+    if not text or not text.strip():
+        logger.warning("Empty or None text provided for TTS")
+        return None
+    
+    try:
+        # Create temporary file for TTS generation
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            temp_path = temp_file.name
+            
+        # Generate TTS file
+        tts_path = create_tts_file(text, lang, temp_path)
+        if not tts_path:
+            logger.error(f"Failed to generate TTS file for {filename}")
+            return None
+        
+        # Prepare metadata for upload
+        upload_metadata = {
+            "filename": filename,
+            "language": lang,
+            "text_length": len(text),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "content_metadata": metadata
+        }
+        
+        # Upload to Supabase
+        file_id = upload_file(upload_metadata, tts_path)
+        
+        # Clean up temporary file
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass  # Ignore cleanup errors
+        
+        if file_id:
+            logger.info(f"Successfully uploaded TTS file {filename} with ID: {file_id}")
+            return file_id  # Return file ID for reference
+        else:
+            logger.error(f"Failed to upload TTS file {filename} to Supabase")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error creating and uploading TTS file {filename}: {str(e)}")
+        logger.debug(traceback.format_exc())
+        return None
+
 def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Process the brick masonry data and generate TTS files.
+    Process the brick masonry data and generate TTS files, uploading to Supabase.
     
     Args:
         input_data: Input JSON data with text content
     
     Returns:
-        dict: Updated data with TTS file paths
+        dict: Updated data with Supabase file IDs and URLs
     """
     if not input_data:
         logger.warning("No input data provided for TTS processing")
         return {}
     
-    # Create output directory for audio files
-    audio_dir = "brick_masonry_audio"
-    try:
-        os.makedirs(audio_dir, exist_ok=True)
-        logger.info(f"Using audio directory: {os.path.abspath(audio_dir)}")
-    except Exception as e:
-        logger.error(f"Failed to create audio directory {audio_dir}: {str(e)}")
-        logger.debug(traceback.format_exc())
-        return input_data  # Return original data on error
-    
     def process_section(section_key: str, section_data: Dict[str, Any], parent_key: str = "") -> None:
         """
-        Recursively process sections and subsections to generate TTS files.
+        Recursively process sections and subsections to generate and upload TTS files.
         
         Args:
             section_key: Current section key
@@ -142,7 +193,7 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
             return
             
         try:
-            # Create a clean filename from the section key - handle all problematic characters
+            # Create a clean filename from the section key
             clean_key = clean_filename(section_key)
             if parent_key:
                 clean_parent = clean_filename(parent_key)
@@ -150,35 +201,52 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 file_prefix = clean_key
             
-            # Generate TTS for main text (English)
+            # Prepare metadata for this section
+            section_metadata = {
+                "section": section_key,
+                "parent_section": parent_key,
+                "type": "audio",
+                "source": "document_processing"
+            }
+            
+            # Generate and upload TTS for main text (English)
             if section_data.get("text"):
                 try:
-                    eng_filename = f"{audio_dir}/{file_prefix}_eng.mp3"
-                    eng_path = create_tts_file(section_data["text"], "en", eng_filename)
-                    section_data["eng_speech_path"] = eng_path if eng_path else "Failed to generate"
+                    eng_filename = f"{file_prefix}_eng.mp3"
+                    eng_metadata = {**section_metadata, "language": "en", "text_type": "original"}
+                    eng_file_id = create_and_upload_tts_file(
+                        section_data["text"], "en", eng_filename, eng_metadata
+                    )
+                    section_data["eng_speech_file_id"] = eng_file_id if eng_file_id else "Failed to generate"
                 except Exception as e:
                     logger.error(f"Failed to generate English TTS for {section_key}: {str(e)}")
-                    section_data["eng_speech_path"] = "Failed to generate"
+                    section_data["eng_speech_file_id"] = "Failed to generate"
             
-            # Generate TTS for Hindi text
+            # Generate and upload TTS for Hindi text
             if section_data.get("hindi_text"):
                 try:
-                    hindi_filename = f"{audio_dir}/{file_prefix}_hindi.mp3"
-                    hindi_path = create_tts_file(section_data["hindi_text"], "hi", hindi_filename)
-                    section_data["hindi_speech_path"] = hindi_path if hindi_path else "Failed to generate"
+                    hindi_filename = f"{file_prefix}_hindi.mp3"
+                    hindi_metadata = {**section_metadata, "language": "hi", "text_type": "translation"}
+                    hindi_file_id = create_and_upload_tts_file(
+                        section_data["hindi_text"], "hi", hindi_filename, hindi_metadata
+                    )
+                    section_data["hindi_speech_file_id"] = hindi_file_id if hindi_file_id else "Failed to generate"
                 except Exception as e:
                     logger.error(f"Failed to generate Hindi TTS for {section_key}: {str(e)}")
-                    section_data["hindi_speech_path"] = "Failed to generate"
+                    section_data["hindi_speech_file_id"] = "Failed to generate"
             
-            # Generate TTS for Gujarati text
+            # Generate and upload TTS for Gujarati text
             if section_data.get("guj_text"):
                 try:
-                    guj_filename = f"{audio_dir}/{file_prefix}_guj.mp3"
-                    guj_path = create_tts_file(section_data["guj_text"], "gu", guj_filename)
-                    section_data["guj_speech_path"] = guj_path if guj_path else "Failed to generate"
+                    guj_filename = f"{file_prefix}_guj.mp3"
+                    guj_metadata = {**section_metadata, "language": "gu", "text_type": "translation"}
+                    guj_file_id = create_and_upload_tts_file(
+                        section_data["guj_text"], "gu", guj_filename, guj_metadata
+                    )
+                    section_data["guj_speech_file_id"] = guj_file_id if guj_file_id else "Failed to generate"
                 except Exception as e:
                     logger.error(f"Failed to generate Gujarati TTS for {section_key}: {str(e)}")
-                    section_data["guj_speech_path"] = "Failed to generate"
+                    section_data["guj_speech_file_id"] = "Failed to generate"
             
             # Process subtopics recursively
             if "subtopics" in section_data and section_data["subtopics"]:
@@ -195,7 +263,7 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         # Process each main section
         total_sections = len(output_data)
-        logger.info(f"Starting TTS generation for {total_sections} sections")
+        logger.info(f"Starting TTS generation and Supabase upload for {total_sections} sections")
         
         for i, (section_key, section_data) in enumerate(output_data.items(), 1):
             try:
@@ -205,7 +273,7 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 logger.error(f"Failed to process section {section_key}: {str(e)}")
                 logger.debug(traceback.format_exc())
         
-        logger.info("TTS generation completed successfully")
+        logger.info("TTS generation and upload completed successfully")
         return output_data
         
     except Exception as e:
