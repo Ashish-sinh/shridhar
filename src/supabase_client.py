@@ -205,6 +205,32 @@ class SupabaseManager:
             logger.error(f"Error deleting file {file_id}: {str(e)}")
             logger.debug(traceback.format_exc())
             return False
+    
+    def get_file_urls(self, file_ids: List[str]) -> Dict[str, str]:
+        """
+        Get public URLs for multiple files by their IDs.
+        
+        Args:
+            file_ids: List of file IDs to get URLs for
+            
+        Returns:
+            Dictionary mapping file IDs to their public URLs
+        """
+        if not file_ids:
+            return {}
+            
+        try:
+            # Query the files table to get storage paths
+            response = self.client.table("files").select("id,url").in_("id", file_ids).execute()
+            
+            if response.data:
+                return {item['id']: item['url'] for item in response.data}
+            return {}
+                
+        except Exception as e:
+            logger.error(f"Error getting file URLs: {str(e)}")
+            logger.debug(traceback.format_exc())
+            return {}
 
 
 # Global instance

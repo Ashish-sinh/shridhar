@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from src.doc_extractor import extract_json_from_doc
 from src.llm_parsing import add_translations
 from src.text_to_speech import process_complete_dataset
-from src.supabase_client import list_files, initialize_database
+from src.supabase_client import list_files, initialize_database, get_supabase_manager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -332,6 +332,50 @@ async def process_document(
         logger.info("Generating TTS files...")
         final_data = process_complete_dataset(translated_data)
         
+        # 4. Get file URLs for all audio files
+        logger.info("Retrieving file URLs...")
+        supabase_manager = get_supabase_manager()
+        
+        # Collect all file IDs from the final data
+        file_ids = set()
+        
+        def collect_file_ids(data):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if key.endswith('_speech_file_id') and value:
+                        file_ids.add(value)
+                    elif isinstance(value, (dict, list)):
+                        collect_file_ids(value)
+            elif isinstance(data, list):
+                for item in data:
+                    collect_file_ids(item)
+        
+        collect_file_ids(final_data)
+        
+        # Get URLs for all file IDs
+        file_urls = supabase_manager.get_file_urls(list(file_ids))
+        
+        # Add URLs to the final data
+        def add_urls_to_data(data, urls):
+            if isinstance(data, dict):
+                result = {}
+                for key, value in data.items():
+                    if key.endswith('_speech_file_id') and value and value in urls:
+                        # Add URL for the file ID
+                        url_key = key.replace('_file_id', '_url')
+                        result[url_key] = urls[value]
+                        result[key] = value  # Keep the original ID
+                    elif isinstance(value, (dict, list)):
+                        result[key] = add_urls_to_data(value, urls)
+                    else:
+                        result[key] = value
+                return result
+            elif isinstance(data, list):
+                return [add_urls_to_data(item, urls) for item in data]
+            return data
+        
+        final_data_with_urls = add_urls_to_data(final_data, file_urls)
+        
         # Save results if requested
         if save_intermediate:
             output_dir = Path("output")
@@ -344,7 +388,7 @@ async def process_document(
                 json.dump(translated_data, f, indent=2, ensure_ascii=False)
             
             with open(output_dir / "final_output.json", "w", encoding="utf-8") as f:
-                json.dump(final_data, f, indent=2, ensure_ascii=False)
+                json.dump(final_data_with_urls, f, indent=2, ensure_ascii=False)
         
         # Clean up temp file
         temp_file.unlink()
@@ -354,7 +398,7 @@ async def process_document(
         return {
             "status": "success",
             "message": "Document processed successfully",
-            "data": final_data,
+            "data": final_data_with_urls,
             "processing_time": processing_time,
             "timestamp": time.time(),
         }
