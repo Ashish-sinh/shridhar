@@ -1,23 +1,29 @@
 """
 Text-to-speech module for generating audio files and uploading to Supabase.
 """
+import asyncio
 import json
 import os
 import re
 import traceback
 import tempfile
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gtts import gTTS
-from gtts.tts import gTTSError
-
+import edge_tts
 from utils.logger import get_logger
 from src.supabase_client import upload_file
 
 # Initialize logger
 logger = get_logger(__name__)
+
+# Voice configuration
+VOICE_MAPPING = {
+    'en': 'en-IN-PrabhatNeural',
+    'hi': 'hi-IN-MadhurNeural',
+    'gu': 'gu-IN-NiranjanNeural'
+}
 
 def clean_filename(filename: str) -> str:
     """
@@ -50,9 +56,9 @@ def clean_filename(filename: str) -> str:
         logger.debug(traceback.format_exc())
         return f"unnamed_{int(datetime.now().timestamp())}"
 
-def create_tts_file(text: str, lang: str, filename: str) -> Optional[str]:
+async def create_tts_file(text: str, lang: str, filename: str) -> Optional[str]:
     """
-    Create a TTS audio file using gTTS.
+    Create a TTS audio file using edge_tts.
     
     Args:
         text: Text to convert to speech
@@ -64,51 +70,39 @@ def create_tts_file(text: str, lang: str, filename: str) -> Optional[str]:
         
     Raises:
         ValueError: If language is not supported
-        gTTSError: If there's an error with gTTS
-        IOError: If there's an error saving the file
+        Exception: If there's an error with edge_tts
     """
     if not text or not text.strip():
         logger.warning("Empty or None text provided for TTS")
         return None
         
-    if not lang or lang not in ['en', 'hi', 'gu']:
-        error_msg = f"Unsupported language: {lang}. Must be 'en', 'hi', or 'gu'"
+    if not lang or lang not in VOICE_MAPPING:
+        error_msg = f"Unsupported language: {lang}. Must be one of: {', '.join(VOICE_MAPPING.keys())}"
         logger.error(error_msg)
         raise ValueError(error_msg)
     
     try:
         logger.debug(f"Generating TTS for {len(text)} characters in {lang}")
         
-        # Create TTS object based on language
-        tts = gTTS(
-            text=text, 
-            lang=lang, 
-            slow=False, 
-            tld="co.in"  # Using Indian domain for better pronunciation of Indian languages
-        )
+        # Get the appropriate voice
+        voice = VOICE_MAPPING[lang]
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(os.path.abspath(filename)) or '.', exist_ok=True)
         
-        # Save the audio file
-        tts.save(filename)
+        # Generate and save the audio file
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(filename)
+        
         logger.info(f"Generated TTS file: {filename} ({os.path.getsize(filename) / 1024:.1f} KB)")
         return filename
     
-    except gTTSError as e:
-        logger.error(f"gTTS error generating speech: {str(e)}")
-        logger.debug(traceback.format_exc())
-        raise
-    except IOError as e:
-        logger.error(f"IOError saving TTS file {filename}: {str(e)}")
-        logger.debug(traceback.format_exc())
-        raise
     except Exception as e:
-        logger.error(f"Unexpected error in create_tts_file: {str(e)}")
+        logger.error(f"Error generating TTS with edge_tts: {str(e)}")
         logger.debug(traceback.format_exc())
-        return None
+        raise
 
-def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Dict[str, Any]) -> Optional[str]:
+async def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Dict[str, Any]) -> Optional[str]:
     """
     Create TTS file and upload to Supabase Storage.
     
@@ -125,13 +119,14 @@ def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Di
         logger.warning("Empty or None text provided for TTS")
         return None
     
+    temp_path = None
     try:
         # Create temporary file for TTS generation
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
             temp_path = temp_file.name
-            
+        
         # Generate TTS file
-        tts_path = create_tts_file(text, lang, temp_path)
+        tts_path = await create_tts_file(text, lang, temp_path)
         if not tts_path:
             logger.error(f"Failed to generate TTS file for {filename}")
             return None
@@ -150,13 +145,14 @@ def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Di
         
         # Clean up temporary file
         try:
-            os.unlink(temp_path)
-        except OSError:
-            pass  # Ignore cleanup errors
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except OSError as e:
+            logger.warning(f"Failed to clean up temporary file {temp_path}: {str(e)}")
         
         if file_id:
             logger.info(f"Successfully uploaded TTS file {filename} with ID: {file_id}")
-            return file_id  # Return file ID for reference
+            return file_id
         else:
             logger.error(f"Failed to upload TTS file {filename} to Supabase")
             return None
@@ -165,8 +161,15 @@ def create_and_upload_tts_file(text: str, lang: str, filename: str, metadata: Di
         logger.error(f"Error creating and uploading TTS file {filename}: {str(e)}")
         logger.debug(traceback.format_exc())
         return None
+    finally:
+        # Ensure temporary file is cleaned up even if an error occurs
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
-def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
+async def process_brick_masonry_data_async(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process the brick masonry data and generate TTS files, uploading to Supabase.
     
@@ -180,14 +183,9 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("No input data provided for TTS processing")
         return {}
     
-    def process_section(section_key: str, section_data: Dict[str, Any], parent_key: str = "") -> None:
+    async def process_section(section_key: str, section_data: Dict[str, Any], parent_key: str = "") -> None:
         """
         Recursively process sections and subsections to generate and upload TTS files.
-        
-        Args:
-            section_key: Current section key
-            section_data: Section data dictionary
-            parent_key: Parent section key for hierarchical naming
         """
         if not section_data or not isinstance(section_data, dict):
             return
@@ -209,49 +207,29 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 "source": "document_processing"
             }
             
-            # Generate and upload TTS for main text (English)
-            if section_data.get("text"):
-                try:
-                    eng_filename = f"{file_prefix}_eng.mp3"
-                    eng_metadata = {**section_metadata, "language": "en", "text_type": "original"}
-                    eng_file_id = create_and_upload_tts_file(
-                        section_data["text"], "en", eng_filename, eng_metadata
-                    )
-                    section_data["eng_speech_file_id"] = eng_file_id if eng_file_id else "Failed to generate"
-                except Exception as e:
-                    logger.error(f"Failed to generate English TTS for {section_key}: {str(e)}")
-                    section_data["eng_speech_file_id"] = "Failed to generate"
-            
-            # Generate and upload TTS for Hindi text
-            if section_data.get("hindi_text"):
-                try:
-                    hindi_filename = f"{file_prefix}_hindi.mp3"
-                    hindi_metadata = {**section_metadata, "language": "hi", "text_type": "translation"}
-                    hindi_file_id = create_and_upload_tts_file(
-                        section_data["hindi_text"], "hi", hindi_filename, hindi_metadata
-                    )
-                    section_data["hindi_speech_file_id"] = hindi_file_id if hindi_file_id else "Failed to generate"
-                except Exception as e:
-                    logger.error(f"Failed to generate Hindi TTS for {section_key}: {str(e)}")
-                    section_data["hindi_speech_file_id"] = "Failed to generate"
-            
-            # Generate and upload TTS for Gujarati text
-            if section_data.get("guj_text"):
-                try:
-                    guj_filename = f"{file_prefix}_guj.mp3"
-                    guj_metadata = {**section_metadata, "language": "gu", "text_type": "translation"}
-                    guj_file_id = create_and_upload_tts_file(
-                        section_data["guj_text"], "gu", guj_filename, guj_metadata
-                    )
-                    section_data["guj_speech_file_id"] = guj_file_id if guj_file_id else "Failed to generate"
-                except Exception as e:
-                    logger.error(f"Failed to generate Gujarati TTS for {section_key}: {str(e)}")
-                    section_data["guj_speech_file_id"] = "Failed to generate"
+            # Process each language
+            for lang, lang_key in [('en', 'text'), ('hi', 'hindi_text'), ('gu', 'guj_text')]:
+                if lang_key in section_data and section_data[lang_key]:
+                    try:
+                        file_key = f"{lang}_speech_file_id"
+                        filename = f"{file_prefix}_{lang}.mp3"
+                        lang_metadata = {**section_metadata, "language": lang, "text_type": "original" if lang == 'en' else "translation"}
+                        
+                        file_id = await create_and_upload_tts_file(
+                            section_data[lang_key], 
+                            lang, 
+                            filename, 
+                            lang_metadata
+                        )
+                        section_data[file_key] = file_id if file_id else "Failed to generate"
+                    except Exception as e:
+                        logger.error(f"Failed to generate {lang.upper()} TTS for {section_key}: {str(e)}")
+                        section_data[f"{lang}_speech_file_id"] = "Failed to generate"
             
             # Process subtopics recursively
             if "subtopics" in section_data and section_data["subtopics"]:
                 for subtopic_key, subtopic_data in section_data["subtopics"].items():
-                    process_section(subtopic_key, subtopic_data, section_key)
+                    await process_section(subtopic_key, subtopic_data, section_key)
                     
         except Exception as e:
             logger.error(f"Error processing section {section_key}: {str(e)}")
@@ -268,7 +246,7 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
         for i, (section_key, section_data) in enumerate(output_data.items(), 1):
             try:
                 logger.info(f"Processing section {i}/{total_sections}: {section_key}")
-                process_section(section_key, section_data)
+                await process_section(section_key, section_data)
             except Exception as e:
                 logger.error(f"Failed to process section {section_key}: {str(e)}")
                 logger.debug(traceback.format_exc())
@@ -281,12 +259,30 @@ def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug(traceback.format_exc())
         return input_data  # Return original data on fatal error
 
-# Alternative function to process complete dataset
+def process_brick_masonry_data(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for process_brick_masonry_data_async.
+    Handles both cases: when called from sync and async contexts.
+    """
+    try:
+        # Try to get the running event loop
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # No event loop running
+        loop = None
+    
+    if loop and loop.is_running():
+        # If there's a running event loop, create a task and wait for it
+        future = asyncio.create_task(process_brick_masonry_data_async(input_data))
+        # Return the future, allowing the caller to await it if needed
+        return future
+    else:
+        # If no event loop is running, create one and run the async function
+        return asyncio.run(process_brick_masonry_data_async(input_data))
+
+# For backward compatibility
 def process_complete_dataset(complete_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process the complete brick masonry dataset from the document.
-    
-    This is a wrapper around process_brick_masonry_data for backward compatibility.
     
     Args:
         complete_data: Complete dataset from the document

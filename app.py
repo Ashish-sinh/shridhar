@@ -6,6 +6,7 @@ import json
 import time
 import logging
 import traceback
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -328,10 +329,14 @@ async def process_document(
         logger.info("Adding translations...")
         translated_data = add_translations(extracted_data)
         
-        # 3. Generate TTS
+        # 3. Generate TTS - handle both sync and async return values
         logger.info("Generating TTS files...")
-        final_data = process_complete_dataset(translated_data)
-        
+        result = process_complete_dataset(translated_data)
+        if asyncio.isfuture(result):
+            final_data = await result
+        else:
+            final_data = result
+            
         # 4. Get file URLs for all audio files
         logger.info("Retrieving file URLs...")
         supabase_manager = get_supabase_manager()
