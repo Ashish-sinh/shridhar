@@ -282,7 +282,7 @@ async def get_files():
 
 # Document processing endpoint
 @app.post(
-    "/process-document",
+    "/api/process-document",
     response_model=DocumentProcessingResponse,
     responses={
         200: {"model": DocumentProcessingResponse},
